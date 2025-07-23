@@ -12,6 +12,7 @@ from transformers.cache_utils import Cache
 from tqdm import tqdm
 import random
 import os
+import argparse
 
 from muon import Muon
 from muonclip import MuonClip, MLAAttentionWithQKClip, SimpleAttentionWithQKClip
@@ -248,92 +249,81 @@ def train_model(model, optimizer, dataloader, config, run_name):
 
 # Main training loop
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train model with specified optimizer')
+    parser.add_argument('--optimizer', type=str, required=True, 
+                       choices=['adam', 'muon', 'muonclip'],
+                       help='Optimizer to use for training')
+    args = parser.parse_args()
+    
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
     tokenizer.pad_token = tokenizer.eos_token
     
-    # Create dataloader (same for all runs)
+    # Create dataloader
     print("Loading dataset...")
     dataloader = create_dataloader(config, tokenizer)
     
-    # Create initial model with HuggingFace GPT2
-    print("Creating initial model...")
+    # Create model with HuggingFace GPT2
+    print("Creating model...")
     model_config = GPT2Config.from_pretrained(config.model_name)
     model_config.use_cache = False
-    initial_model = GPT2LMHeadModel(model_config)
+    model = GPT2LMHeadModel(model_config)
     
     # Replace attention modules with our custom implementation
     print("Replacing attention modules...")
-    replace_attention_modules(initial_model)
+    replace_attention_modules(model)
     
-    # Move to device, compile and save initial state
-    initial_model = initial_model.to(config.device)
+    # Move to device
+    model = model.to(config.device)
     
     # Verify replacement worked
     attention_modules = []
-    for name, module in initial_model.named_modules():
+    for name, module in model.named_modules():
         if isinstance(module, GPT2AttentionAdapter):
             attention_modules.append(name)
     print(f"Replaced {len(attention_modules)} attention modules")
     
-    # Train with each optimizer
-    optimizers = [
-        ("Adam", lambda m: torch.optim.Adam(
-            m.parameters(), 
+    # Create optimizer based on argument
+    opt_name = args.optimizer.capitalize()
+    if args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(
+            model.parameters(), 
             lr=config.learning_rate,
             betas=(config.adam_beta1, config.adam_beta2),
             weight_decay=config.weight_decay
-        )),
-        ("Muon", lambda m: Muon(
-            m.parameters(),
+        )
+    elif args.optimizer == 'muon':
+        optimizer = Muon(
+            model.parameters(),
             lr=config.learning_rate,
             momentum=config.muon_momentum,
             weight_decay=config.weight_decay
-        )),
-        ("MuonClip", lambda m: MuonClip(
-            m,
+        )
+    elif args.optimizer == 'muonclip':
+        optimizer = MuonClip(
+            model,
             lr=config.learning_rate,
             momentum=config.muon_momentum,
             weight_decay=config.weight_decay,
             qk_clip_threshold=config.muonclip_threshold
-        ))
-    ]
+        )
     
-    results = {}
+    print(f"Training with {opt_name}...")
     
-    for opt_name, opt_fn in optimizers:
-        print(f"\nTraining with {opt_name}...")
-        
-        # Create fresh model with same initialization
-        model = GPT2LMHeadModel(model_config)
-        replace_attention_modules(model)
-        model = model.to(config.device) # type: ignore
-        
-        # Create optimizer
-        optimizer = opt_fn(model)
-        
-        # Train
-        trained_model = train_model(model, optimizer, dataloader, config, opt_name)
-        
-        # Save final loss for comparison
-        model.eval()
-        with torch.no_grad():
-            # Get a validation batch
-            val_batch = next(iter(dataloader))
-            input_ids = val_batch["input_ids"].to(config.device)
-            labels = val_batch["labels"].to(config.device)
-            outputs = model(input_ids=input_ids, labels=labels)
-            val_loss = outputs.loss
-            results[opt_name] = val_loss.item()
-        
-        # Clean up
-        del model, optimizer
-        torch.cuda.empty_cache()
+    # Train
+    trained_model = train_model(model, optimizer, dataloader, config, opt_name)
     
-    # Print final comparison
-    print("\nFinal validation losses:")
-    for opt_name, loss in results.items():
-        print(f"{opt_name}: {loss:.4f}")
+    # Save final loss for comparison
+    model.eval()
+    with torch.no_grad():
+        # Get a validation batch
+        val_batch = next(iter(dataloader))
+        input_ids = val_batch["input_ids"].to(config.device)
+        labels = val_batch["labels"].to(config.device)
+        outputs = model(input_ids=input_ids, labels=labels)
+        val_loss = outputs.loss
+        print(f"Final validation loss: {val_loss.item():.4f}")
 
 if __name__ == "__main__":
     main()
