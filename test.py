@@ -14,8 +14,8 @@ import random
 import os
 import argparse
 
-from muon import SingleDeviceMuonWithAuxAdam as Muon
-from muonclip import MuonClip, SimpleAttentionWithQKClip
+from muon import SingleDeviceMuonWithAuxAdam
+from muonclip import MuonClipWithAuxAdam, SimpleAttentionWithQKClip
 
 # Set deterministic behavior
 def set_seed(seed=42):
@@ -36,18 +36,31 @@ class Config:
     
     # Training
     batch_size = 8
-    learning_rate = 1e-3
-    weight_decay = 0.1
+    adam_lr = 1e-3
     num_steps = 1000
     log_interval = 10
-    max_length = 512
-    
-    # Optimizer specific
-    adam_beta1 = 0.9
-    adam_beta2 = 0.999
+    max_seq_len = 512
+
+    # Adam hparams
+    adam_beta1 = 0.8
+    adam_beta2 = 0.95
+    adam_eps = 1e-10
+
+    # Muon hparams
+    muon_head_lr = 0.05
+    muon_embed_lr = 0.6
+    muon_scalar_lr = 0.04
+    muon_adam_lr = 0.22
     muon_momentum = 0.95
-    muonclip_threshold = 100.0
-    
+
+    # Muonclip hparams
+    muonclip_head_lr = 0.05
+    muonclip_embed_lr = 0.6
+    muonclip_scalar_lr = 0.04
+    muonclip_adam_lr = 0.22
+    muonclip_momentum = 0.95
+    muonclip_qk_clip_threshold = 100.0
+
     # Data
     dataset_name = "HuggingFaceFW/fineweb-edu"
     dataset_config = "sample-10BT"
@@ -284,31 +297,35 @@ def main():
             attention_modules.append(name)
     print(f"Replaced {len(attention_modules)} attention modules")
     
+    # collect the parameters to optimize
+    hidden_matrix_params = [p for n, p in model.transformer.h.named_parameters() if p.ndim >= 2 and "embed" not in n]
+    embed_params = [model.transformer.wte, model.transformer.wpe]
+    scalar_params = [p for p in model.parameters() if p.ndim < 2]
+    head_params = [model.lm_head]
+
     # Create optimizer based on argument
     opt_name = args.optimizer.capitalize()
+    
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             list(model.parameters()), 
-            lr=config.learning_rate,
+            lr=config.adam_lr,
             betas=(config.adam_beta1, config.adam_beta2),
-            weight_decay=config.weight_decay
         )
     elif args.optimizer == 'muon':
-        optimizer = Muon(
-            list(model.parameters()),
-            lr=config.learning_rate,
-            momentum=config.muon_momentum,
-            weight_decay=config.weight_decay
-        )
+        adam_groups = [dict(params=head_params, lr=config.adam_lr), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+        adam_groups = [dict(**g, betas=(config.adam_beta1, config.adam_beta2), eps=config.adam_eps, use_muon=False) for g in adam_groups]
+        muon_group = dict(params=hidden_matrix_params, lr=config.muon_head_lr, momentum=config.muon_momentum, use_muon=True)
+        param_groups = [*adam_groups, muon_group]
+        optimizer = MuonClipWithAuxAdam(param_groups=param_groups)
     elif args.optimizer == 'muonclip':
-        optimizer = MuonClip(
-            model,
-            lr=config.learning_rate,
-            momentum=config.muon_momentum,
-            weight_decay=config.weight_decay,
-            qk_clip_threshold=config.muonclip_threshold
-        )
-    
+        adam_groups = [dict(params=head_params, lr=config.adam_lr), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+        adam_groups = [dict(**g, betas=(config.adam_beta1, config.adam_beta2), eps=config.adam_eps, use_muon=False) for g in adam_groups]
+        muon_group = dict(params=hidden_matrix_params, lr=config.muon_head_lr, momentum=config.muon_momentum, use_muon=True)
+    param_groups = [*adam_groups, muon_group]
+        muon_group["qk_clip_threshold"] = config.muon_qk_clip_threshold
+        optimizer = MuonClipWithAuxAdam(param_groups=param_groups)
+
     print(f"Training with {opt_name}...")
     
     # Train
