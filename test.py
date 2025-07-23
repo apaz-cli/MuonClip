@@ -18,15 +18,17 @@ import time
 from muon import SingleDeviceMuonWithAuxAdam
 from muonclip import MuonClipWithAuxAdam, SimpleAttentionWithQKClip
 
+torch.set_float32_matmul_precision('medium')
+
 # Configuration
 class Config:
     # Model
     model_name = "gpt2"  # small GPT2
     
     # Training
-    batch_size = 32
+    batch_size = 64
     adam_lr = 1e-3
-    num_steps = 10000
+    num_steps = 2000
     log_interval = 100
     max_seq_len = 512
 
