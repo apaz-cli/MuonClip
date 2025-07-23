@@ -14,8 +14,8 @@ import random
 import os
 import argparse
 
-from muon import Muon
-from muonclip import MuonClip, MLAAttentionWithQKClip, SimpleAttentionWithQKClip
+from muon import SingleDeviceMuonWithAuxAdam as Muon
+from muonclip import MuonClip, SimpleAttentionWithQKClip
 
 # Set deterministic behavior
 def set_seed(seed=42):
@@ -53,7 +53,7 @@ class Config:
     dataset_config = "sample-10BT"
     
     # Device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
 config = Config()
 
@@ -288,14 +288,14 @@ def main():
     opt_name = args.optimizer.capitalize()
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(
-            model.parameters(), 
+            list(model.parameters()), 
             lr=config.learning_rate,
             betas=(config.adam_beta1, config.adam_beta2),
             weight_decay=config.weight_decay
         )
     elif args.optimizer == 'muon':
         optimizer = Muon(
-            model.parameters(),
+            list(model.parameters()),
             lr=config.learning_rate,
             momentum=config.muon_momentum,
             weight_decay=config.weight_decay
@@ -312,7 +312,7 @@ def main():
     print(f"Training with {opt_name}...")
     
     # Train
-    trained_model = train_model(model, optimizer, dataloader, config, opt_name)
+    train_model(model, optimizer, dataloader, config, opt_name)
     
     # Save final loss for comparison
     model.eval()

@@ -40,6 +40,14 @@ def muonclip_update(grad, momentum, beta=0.95, ns_steps=5, nesterov=True):
     return update
 
 
+def adam_update(grad, buf1, buf2, step, betas, eps):
+    buf1.lerp_(grad, 1 - betas[0])
+    buf2.lerp_(grad.square(), 1 - betas[1])
+    buf1c = buf1 / (1 - betas[0]**step)
+    buf2c = buf2 / (1 - betas[1]**step)
+    return buf1c / (buf2c.sqrt() + eps)
+
+
 class MuonClip(torch.optim.Optimizer):
     """MuonClip Optimizer with automatic QK-Clip detection"""
     
@@ -288,3 +296,4 @@ class SimpleAttentionWithQKClip(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, L, D)
         
         return out
+
