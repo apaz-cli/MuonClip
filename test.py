@@ -2,6 +2,7 @@ from typing import Optional, Union
 import torch
 import torch.nn as nn
 import math
+import json
 import wandb
 import numpy as np
 from torch.utils.data import DataLoader
@@ -145,7 +146,7 @@ def create_dataloader(config, tokenizer):
     )
     
     # Deterministic shuffle with seed
-    dataset = dataset.shuffle(seed=42, buffer_size=10000)
+    dataset = dataset.shuffle(seed=42, buffer_size=10000) # type: ignore
     
     def tokenize_function(examples):
         # Tokenize texts individually to respect boundaries
@@ -165,7 +166,7 @@ def create_dataloader(config, tokenizer):
     tokenized_dataset = dataset.map(
         tokenize_function,
         batched=True,
-        remove_columns=dataset.column_names,
+        remove_columns=dataset.column_names, # type: ignore
     )
     
     # Convert to torch format
@@ -173,7 +174,7 @@ def create_dataloader(config, tokenizer):
     
     # Create dataloader
     dataloader = DataLoader(
-        tokenized_dataset,
+        tokenized_dataset, # type: ignore
         batch_size=config.batch_size,
         drop_last=True,
     )
@@ -187,7 +188,7 @@ def train_model(model, optimizer, dataloader, config, run_name):
         name=run_name,
         config={
             "optimizer": run_name,
-            "learning_rate": config.learning_rate,
+            "config": json.dumps(config.__dict__, indent=2),
             "batch_size": config.batch_size,
             "model_size": sum(p.numel() for p in model.parameters()),
         }
@@ -245,7 +246,7 @@ def train_model(model, optimizer, dataloader, config, run_name):
             }
             
             # Log attention max logits for MuonClip
-            if isinstance(optimizer, MuonClip):
+            if isinstance(optimizer, MuonClipWithAuxAdam):
                 max_logits = []
                 for layer_id, layer_info in optimizer.attention_layers.items():
                     max_logits.extend(layer_info['max_logits'])
@@ -288,7 +289,7 @@ def main():
     replace_attention_modules(model)
     
     # Move to device
-    model = model.to(config.device)
+    model = model.to(config.device) # type: ignore
     
     # Verify replacement worked
     attention_modules = []
@@ -304,7 +305,7 @@ def main():
     head_params = [model.lm_head]
 
     # Create optimizer based on argument
-    opt_name = args.optimizer.capitalize()
+    
     
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(
@@ -335,6 +336,7 @@ def main():
         param_groups = [*adam_groups, muon_group]
         optimizer = MuonClipWithAuxAdam(param_groups=param_groups, model=model)
 
+    opt_name = args.optimizer.capitalize()
     print(f"Training with {opt_name}...")
     
     # Train
