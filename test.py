@@ -311,20 +311,29 @@ def main():
             list(model.parameters()), 
             lr=config.adam_lr,
             betas=(config.adam_beta1, config.adam_beta2),
+            eps=config.adam_eps
         )
     elif args.optimizer == 'muon':
-        adam_groups = [dict(params=head_params, lr=config.adam_lr), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+        adam_groups = [
+            dict(params=head_params, lr=config.muon_adam_lr), 
+            dict(params=embed_params, lr=config.muon_embed_lr), 
+            dict(params=scalar_params, lr=config.muon_scalar_lr)
+        ]
         adam_groups = [dict(**g, betas=(config.adam_beta1, config.adam_beta2), eps=config.adam_eps, use_muon=False) for g in adam_groups]
         muon_group = dict(params=hidden_matrix_params, lr=config.muon_head_lr, momentum=config.muon_momentum, use_muon=True)
         param_groups = [*adam_groups, muon_group]
-        optimizer = MuonClipWithAuxAdam(param_groups=param_groups)
+        optimizer = SingleDeviceMuonWithAuxAdam(param_groups=param_groups)
     elif args.optimizer == 'muonclip':
-        adam_groups = [dict(params=head_params, lr=config.adam_lr), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+        adam_groups = [
+            dict(params=head_params, lr=config.muonclip_adam_lr), 
+            dict(params=embed_params, lr=config.muonclip_embed_lr), 
+            dict(params=scalar_params, lr=config.muonclip_scalar_lr)
+        ]
         adam_groups = [dict(**g, betas=(config.adam_beta1, config.adam_beta2), eps=config.adam_eps, use_muon=False) for g in adam_groups]
-        muon_group = dict(params=hidden_matrix_params, lr=config.muon_head_lr, momentum=config.muon_momentum, use_muon=True)
-    param_groups = [*adam_groups, muon_group]
-        muon_group["qk_clip_threshold"] = config.muon_qk_clip_threshold
-        optimizer = MuonClipWithAuxAdam(param_groups=param_groups)
+        muon_group = dict(params=hidden_matrix_params, lr=config.muonclip_head_lr, momentum=config.muonclip_momentum, use_muon=True)
+        muon_group["qk_clip_threshold"] = config.muonclip_qk_clip_threshold
+        param_groups = [*adam_groups, muon_group]
+        optimizer = MuonClipWithAuxAdam(param_groups=param_groups, model=model)
 
     print(f"Training with {opt_name}...")
     
