@@ -276,7 +276,9 @@ def train_model(model, optimizer, dataloader, config, opt_name):
     # Create iterator from dataloader
     data_iter = iter(dataloader)
 
+    total_samples = config.num_steps * config.batch_size
     print(f"Starting training with {opt_name}")
+    print(f"Total samples to process: {total_samples:,} ({config.num_steps:,} steps × {config.batch_size} batch size)")
     start_time = time.time()
     last_log_time = start_time
     
