@@ -9,7 +9,6 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, GPT2Config, GPT2LMHeadModel
 from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
 from transformers.cache_utils import Cache
-from tqdm import tqdm
 import random
 import os
 import argparse
@@ -276,9 +275,7 @@ def train_model(model, optimizer, dataloader, config, opt_name):
     # Create iterator from dataloader
     data_iter = iter(dataloader)
     
-    pbar = tqdm(range(config.num_steps), desc=f"Training {opt_name}")
-    
-    for step in pbar:
+    for step in range(config.num_steps):
         try:
             batch = next(data_iter)
         except StopIteration:
@@ -332,7 +329,7 @@ def train_model(model, optimizer, dataloader, config, opt_name):
             
             wandb.log(metrics)
             
-            pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{perplexity.item():.2f}")
+            print(f"Step {step}: loss={loss.item():.4f}, ppl={perplexity.item():.2f}")
     
     wandb.finish()
     return model
