@@ -1,0 +1,4 @@
+.aider*
+**__pycache__/**
+wandb/**
+.venv/**
