@@ -1,7 +1,6 @@
 from typing import Optional, Union
 import torch
 import torch.nn as nn
-import math
 import json
 import wandb
 import numpy as np
@@ -38,8 +37,8 @@ class Config:
     # Training
     batch_size = 8
     adam_lr = 1e-3
-    num_steps = 1000
-    log_interval = 10
+    num_steps = 10000
+    log_interval = 100
     max_seq_len = 512
 
     # Adam hparams
@@ -68,6 +67,8 @@ class Config:
     muonclip_adam_beta2 = 0.95
     muonclip_adam_eps = 1e-10
 
+    assert_same = True
+
     # Data
     dataset_name = "HuggingFaceFW/fineweb-edu"
     dataset_config = "sample-10BT"
@@ -76,6 +77,15 @@ class Config:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
 config = Config()
+if config.assert_same:
+    assert config.muon_head_lr == config.muonclip_head_lr, "Muon and MuonClip head learning rates must match"
+    assert config.muon_embed_lr == config.muonclip_embed_lr, "Muon and MuonClip embed learning rates must match"
+    assert config.muon_scalar_lr == config.muonclip_scalar_lr, "Muon and MuonClip scalar learning rates must match"
+    assert config.muon_adam_lr == config.muonclip_adam_lr, "Muon and MuonClip Adam learning rates must match"
+    assert config.muon_momentum == config.muonclip_momentum, "Muon and MuonClip momentum must match"
+    assert config.muon_adam_beta1 == config.muonclip_adam_beta1, "Muon and MuonClip Adam beta1 must match"
+    assert config.muon_adam_beta2 == config.muonclip_adam_beta2, "Muon and MuonClip Adam beta2 must match"
+    assert config.muon_adam_eps == config.muonclip_adam_eps, "Muon and MuonClip Adam epsilon must match"
 
 # Adapter to make SimpleAttentionWithQKClip compatible with GPT2
 class GPT2AttentionAdapter(nn.Module):
@@ -267,6 +277,12 @@ def train_model(model, optimizer, dataloader, config, run_name):
     wandb.finish()
     return model
 
+def get_param_name(model, target_param):
+    for name, param in model.named_parameters():
+        if id(param) == id(target_param):
+            return name
+    raise ValueError("Parameter not found in model")
+
 # Main training loop
 def main():
     # Parse command line arguments
@@ -305,14 +321,15 @@ def main():
     print(f"Replaced {len(attention_modules)} attention modules")
     
     # collect the parameters to optimize
-    hidden_matrix_params = [p for n, p in model.transformer.h.named_parameters() if p.ndim >= 2 and "embed" not in n]
-    embed_params = [model.transformer.wte, model.transformer.wpe]
-    scalar_params = [p for p in model.parameters() if p.ndim < 2]
-    head_params = [model.lm_head]
+    
+    # GPT2 ties the weights of the head to the (non-positional) embedding layer for... reasons? Fair enough. We treat them both as the head param.
+    embed_params = [model.transformer.wpe.weight]
+    head_params = [model.lm_head.weight]
+    accounted_names = {get_param_name(model, p) for p in (embed_params + head_params)}
+    scalar_params = [p for n, p in model.named_parameters() if (p.ndim < 2) and (n not in accounted_names)]
+    hidden_matrix_params = [p for n, p in model.named_parameters() if (p.ndim >= 2) and (n not in accounted_names)]
 
     # Create optimizer based on argument
-    
-    
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             list(model.parameters()), 
@@ -337,8 +354,7 @@ def main():
             dict(params=scalar_params, lr=config.muonclip_scalar_lr)
         ]
         adam_groups = [dict(**g, betas=(config.muonclip_adam_beta1, config.muonclip_adam_beta2), eps=config.muonclip_adam_eps, use_muon=False) for g in adam_groups]
-        muon_group = dict(params=hidden_matrix_params, lr=config.muonclip_head_lr, momentum=config.muonclip_momentum, use_muon=True)
-        muon_group["qk_clip_threshold"] = config.muonclip_qk_clip_threshold
+        muon_group = dict(params=hidden_matrix_params, lr=config.muonclip_head_lr, momentum=config.muonclip_momentum, use_muon=True, qk_clip_threshold=config.muonclip_qk_clip_threshold)
         param_groups = [*adam_groups, muon_group]
         optimizer = MuonClipWithAuxAdam(param_groups=param_groups, model=model)
 

@@ -53,15 +53,15 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
     MuonClip variant that can be used for all parameters in the network, since it runs an
     internal AdamW for the parameters that are not compatible with MuonClip. The user must manually
     specify which parameters shall be optimized with MuonClip and which with Adam by passing in a
-    list of param_groups with the `use_muonclip` flag set.
+    list of param_groups with the `use_muon` flag set.
 
     The point of this class is to allow the user to have a single optimizer in their code, rather
     than having both a MuonClip and an Adam which each need to be stepped.
     """
     def __init__(self, param_groups, model=None):
         for group in param_groups:
-            assert "use_muonclip" in group
-            if group["use_muonclip"]:
+            assert "use_muon" in group
+            if group["use_muon"]:
                 # defaults for MuonClip
                 group["lr"] = group.get("lr", 0.02)
                 group["momentum"] = group.get("momentum", 0.95)
@@ -69,14 +69,14 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
                 group["qk_clip_threshold"] = group.get("qk_clip_threshold", 100.0)
                 group["ns_steps"] = group.get("ns_steps", 5)
                 group["nesterov"] = group.get("nesterov", True)
-                assert set(group.keys()) == set(["params", "lr", "momentum", "weight_decay", "qk_clip_threshold", "ns_steps", "nesterov", "use_muonclip"])
+                assert set(group.keys()) == set(["params", "lr", "momentum", "weight_decay", "qk_clip_threshold", "ns_steps", "nesterov", "use_muon"])
             else:
                 # defaults for Adam
                 group["lr"] = group.get("lr", 3e-4)
                 group["betas"] = group.get("betas", (0.9, 0.95))
                 group["eps"] = group.get("eps", 1e-10)
                 group["weight_decay"] = group.get("weight_decay", 0)
-                assert set(group.keys()) == set(["params", "lr", "betas", "eps", "weight_decay", "use_muonclip"])
+                assert set(group.keys()) == set(["params", "lr", "betas", "eps", "weight_decay", "use_muon"])
         super().__init__(param_groups, dict())
         
         # Auto-detect attention layers from model structure
@@ -181,7 +181,7 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
-            if group["use_muonclip"]:
+            if group["use_muon"]:
                 for p in group["params"]:
                     if p.grad is None:
                         p.grad = torch.zeros_like(p)  # Force synchronization
@@ -215,7 +215,7 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
         """Apply QK-Clip to registered attention parameters"""
         qk_threshold = None
         for group in self.param_groups:
-            if group.get("use_muonclip", False):
+            if group.get("use_muon", False):
                 qk_threshold = group['qk_clip_threshold']
                 break
             
