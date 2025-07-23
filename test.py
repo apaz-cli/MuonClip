@@ -144,7 +144,7 @@ def get_peak_flops(device_name: str) -> float:
         print(f"Peak flops undefined for: {device_name}, fallback to A100")
         return 312e12
 
-print(f"Peak FLOPS for device \"{torch.cuda.get_device_name(0)}\": {get_peak_flops(torch.cuda.get_device_name(0))}")
+print(f"Peak FLOPS for device \"{torch.cuda.get_device_name(0)}\": {get_peak_flops(torch.cuda.get_device_name(0)):.3e}")
 
 # Adapter to make SimpleAttentionWithQKClip compatible with GPT2
 class GPT2AttentionAdapter(nn.Module):
@@ -274,7 +274,8 @@ def train_model(model, optimizer, dataloader, config, opt_name):
     
     # Create iterator from dataloader
     data_iter = iter(dataloader)
-    
+
+    print(f"Starting training with {opt_name}")
     for step in range(config.num_steps):
         try:
             batch = next(data_iter)
