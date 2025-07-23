@@ -13,6 +13,7 @@ import random
 import os
 import argparse
 import subprocess
+import time
 
 from muon import SingleDeviceMuonWithAuxAdam
 from muonclip import MuonClipWithAuxAdam, SimpleAttentionWithQKClip
@@ -276,6 +277,9 @@ def train_model(model, optimizer, dataloader, config, opt_name):
     data_iter = iter(dataloader)
 
     print(f"Starting training with {opt_name}")
+    start_time = time.time()
+    last_log_time = start_time
+    
     for step in range(config.num_steps):
         try:
             batch = next(data_iter)
@@ -304,6 +308,25 @@ def train_model(model, optimizer, dataloader, config, opt_name):
         
         # Logging
         if step % config.log_interval == 0:
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+            
+            # Calculate iterations per second for this interval
+            if step > 0:
+                interval_time = current_time - last_log_time
+                it_per_sec = config.log_interval / interval_time
+            else:
+                it_per_sec = 0.0
+            
+            # Estimate time remaining
+            if step > 0:
+                avg_time_per_step = elapsed_time / (step + 1)
+                remaining_steps = config.num_steps - (step + 1)
+                eta_seconds = remaining_steps * avg_time_per_step
+                eta_str = f"{int(eta_seconds // 3600):02d}:{int((eta_seconds % 3600) // 60):02d}:{int(eta_seconds % 60):02d}"
+            else:
+                eta_str = "??:??:??"
+            
             # Get learning rate
             lr = optimizer.param_groups[0]['lr']
             
@@ -317,6 +340,8 @@ def train_model(model, optimizer, dataloader, config, opt_name):
                 "grad_norm": grad_norm.item(),
                 "learning_rate": lr,
                 "step": step,
+                "it_per_sec": it_per_sec,
+                "elapsed_time": elapsed_time,
             }
             
             # Log attention max logits for MuonClip
@@ -330,7 +355,12 @@ def train_model(model, optimizer, dataloader, config, opt_name):
             
             wandb.log(metrics)
             
-            print(f"Step {step}: loss={loss.item():.4f}, ppl={perplexity.item():.2f}")
+            # Format elapsed time
+            elapsed_str = f"{int(elapsed_time // 3600):02d}:{int((elapsed_time % 3600) // 60):02d}:{int(elapsed_time % 60):02d}"
+            
+            print(f"Step {step}: loss={loss.item():.4f}, ppl={perplexity.item():.2f}, {it_per_sec:.2f}it/s, elapsed={elapsed_str}, ETA={eta_str}")
+            
+            last_log_time = current_time
     
     wandb.finish()
     return model
