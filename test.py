@@ -152,7 +152,7 @@ def create_dataloader(config, tokenizer):
         tokenized = tokenizer(
             examples["text"],
             truncation=True,
-            max_length=config.max_length,
+            max_length=config.max_seq_len,
             padding="max_length",
             return_tensors="pt"
         )
