@@ -24,7 +24,7 @@ class Config:
     model_name = "gpt2"  # small GPT2
     
     # Training
-    batch_size = 8
+    batch_size = 32
     adam_lr = 1e-3
     num_steps = 10000
     log_interval = 100
@@ -358,7 +358,7 @@ def train_model(model, optimizer, dataloader, config, opt_name):
             # Format elapsed time
             elapsed_str = f"{int(elapsed_time // 3600):02d}:{int((elapsed_time % 3600) // 60):02d}:{int(elapsed_time % 60):02d}"
             
-            print(f"Step {step}: loss={loss.item():.4f}, ppl={perplexity.item():.2f}, {it_per_sec:.2f}it/s, elapsed={elapsed_str}, ETA={eta_str}")
+            print(f"Step {step}/{config.num_steps}: loss={loss.item():.4f}, ppl={perplexity.item():.2f}, {it_per_sec:.2f}it/s, elapsed={elapsed_str}, ETA={eta_str}")
             
             last_log_time = current_time
     
