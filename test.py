@@ -53,6 +53,9 @@ class Config:
     muon_scalar_lr = 0.04
     muon_adam_lr = 0.22
     muon_momentum = 0.95
+    muon_adam_beta1 = 0.8
+    muon_adam_beta2 = 0.95
+    muon_adam_eps = 1e-10
 
     # Muonclip hparams
     muonclip_head_lr = 0.05
@@ -61,6 +64,9 @@ class Config:
     muonclip_adam_lr = 0.22
     muonclip_momentum = 0.95
     muonclip_qk_clip_threshold = 100.0
+    muonclip_adam_beta1 = 0.8
+    muonclip_adam_beta2 = 0.95
+    muonclip_adam_eps = 1e-10
 
     # Data
     dataset_name = "HuggingFaceFW/fineweb-edu"
@@ -320,7 +326,7 @@ def main():
             dict(params=embed_params, lr=config.muon_embed_lr), 
             dict(params=scalar_params, lr=config.muon_scalar_lr)
         ]
-        adam_groups = [dict(**g, betas=(config.adam_beta1, config.adam_beta2), eps=config.adam_eps, use_muon=False) for g in adam_groups]
+        adam_groups = [dict(**g, betas=(config.muon_adam_beta1, config.muon_adam_beta2), eps=config.muon_adam_eps, use_muon=False) for g in adam_groups]
         muon_group = dict(params=hidden_matrix_params, lr=config.muon_head_lr, momentum=config.muon_momentum, use_muon=True)
         param_groups = [*adam_groups, muon_group]
         optimizer = SingleDeviceMuonWithAuxAdam(param_groups=param_groups)
@@ -330,7 +336,7 @@ def main():
             dict(params=embed_params, lr=config.muonclip_embed_lr), 
             dict(params=scalar_params, lr=config.muonclip_scalar_lr)
         ]
-        adam_groups = [dict(**g, betas=(config.adam_beta1, config.adam_beta2), eps=config.adam_eps, use_muon=False) for g in adam_groups]
+        adam_groups = [dict(**g, betas=(config.muonclip_adam_beta1, config.muonclip_adam_beta2), eps=config.muonclip_adam_eps, use_muon=False) for g in adam_groups]
         muon_group = dict(params=hidden_matrix_params, lr=config.muonclip_head_lr, momentum=config.muonclip_momentum, use_muon=True)
         muon_group["qk_clip_threshold"] = config.muonclip_qk_clip_threshold
         param_groups = [*adam_groups, muon_group]
