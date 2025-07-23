@@ -58,7 +58,7 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
     The point of this class is to allow the user to have a single optimizer in their code, rather
     than having both a MuonClip and an Adam which each need to be stepped.
     """
-    def __init__(self, param_groups):
+    def __init__(self, param_groups, model=None):
         for group in param_groups:
             assert "use_muonclip" in group
             if group["use_muonclip"]:
@@ -79,8 +79,50 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
                 assert set(group.keys()) == set(["params", "lr", "betas", "eps", "weight_decay", "use_muonclip"])
         super().__init__(param_groups, dict())
         
-        # Auto-detect attention layers from model structure - only for MuonClip groups
+        # Auto-detect attention layers from model structure
         self.attention_layers = {}
+        if model is not None:
+            self._detect_attention_params(model)
+
+    def _detect_attention_params(self, model):
+        """Automatically detect and group attention parameters from model"""
+        # Walk through all modules and find attention layers
+        for name, module in model.named_modules():
+            if isinstance(module, (MLAAttentionWithQKClip, SimpleAttentionWithQKClip)):
+                layer_id = name  # Use module path as layer ID
+                
+                if isinstance(module, MLAAttentionWithQKClip):
+                    # MLA style with per-head components
+                    heads_config = []
+                    for h in range(module.num_heads):
+                        heads_config.append({
+                            'qc_params': [module.qc_projs[h].weight],
+                            'kc_params': [module.kc_projs[h].weight],
+                            'qr_params': [module.qr_projs[h].weight],
+                            'kr_params': []  # kr is shared
+                        })
+                    
+                    self.attention_layers[layer_id] = {
+                        'heads': heads_config,
+                        'max_logits': [0.0] * module.num_heads,
+                        'module': module
+                    }
+                else:
+                    # Standard attention
+                    self.attention_layers[layer_id] = {
+                        'heads': [{
+                            'qc_params': [module.q_proj.weight],
+                            'kc_params': [module.k_proj.weight],
+                            'qr_params': [],
+                            'kr_params': []
+                        }],
+                        'max_logits': [0.0],
+                        'module': module
+                    }
+                
+                # Set optimizer reference in module
+                module._optimizer = self
+                module._layer_id = layer_id
 
     def register_attention_layer(self, layer_id, module):
         """Manually register an attention layer for QK-Clip"""
@@ -198,141 +240,6 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
                     for param in head_config.get('qr_params', []):
                         param.mul_(gamma)
 
-
-class MuonClip(torch.optim.Optimizer):
-    """MuonClip Optimizer with automatic QK-Clip detection"""
-    
-    def __init__(self, model, lr=0.02, weight_decay=0.0, momentum=0.95, 
-                 qk_clip_threshold=100.0, ns_steps=5, nesterov=True):
-        # Extract parameters from model
-        params = model.parameters()
-        
-        defaults = dict(
-            lr=lr, 
-            weight_decay=weight_decay, 
-            momentum=momentum,
-            qk_clip_threshold=qk_clip_threshold,
-            ns_steps=ns_steps,
-            nesterov=nesterov
-        )
-        super().__init__(params, defaults)
-        
-        # Auto-detect attention layers from model structure
-        self.attention_layers = {}
-        self._detect_attention_params(model)
-    
-    def _detect_attention_params(self, model):
-        """Automatically detect and group attention parameters from model"""
-        # Walk through all modules and find attention layers
-        for name, module in model.named_modules():
-            if isinstance(module, (MLAAttentionWithQKClip, SimpleAttentionWithQKClip)):
-                layer_id = name  # Use module path as layer ID
-                
-                if isinstance(module, MLAAttentionWithQKClip):
-                    # MLA style with per-head components
-                    heads_config = []
-                    for h in range(module.num_heads):
-                        heads_config.append({
-                            'qc_params': [module.qc_projs[h].weight],
-                            'kc_params': [module.kc_projs[h].weight],
-                            'qr_params': [module.qr_projs[h].weight],
-                            'kr_params': []  # kr is shared
-                        })
-                    
-                    self.attention_layers[layer_id] = {
-                        'heads': heads_config,
-                        'max_logits': [0.0] * module.num_heads,
-                        'module': module
-                    }
-                else:
-                    # Standard attention
-                    self.attention_layers[layer_id] = {
-                        'heads': [{
-                            'qc_params': [module.q_proj.weight],
-                            'kc_params': [module.k_proj.weight],
-                            'qr_params': [],
-                            'kr_params': []
-                        }],
-                        'max_logits': [0.0],
-                        'module': module
-                    }
-                
-                # Set optimizer reference in module
-                module._optimizer = self # type: ignore (monke patch)
-                module._layer_id = layer_id
-    
-    def update_attention_max_logit(self, layer_id, max_logit, head_idx=None):
-        """Update max logit for a specific attention layer/head"""
-        if layer_id not in self.attention_layers:
-            return
-            
-        if isinstance(max_logit, (list, tuple)):
-            self.attention_layers[layer_id]['max_logits'] = list(max_logit)
-        elif head_idx is not None:
-            self.attention_layers[layer_id]['max_logits'][head_idx] = max_logit
-        else:
-            self.attention_layers[layer_id]['max_logits'] = [max_logit] * len(
-                self.attention_layers[layer_id]['heads']
-            )
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        for group in self.param_groups:
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                    
-                state = self.state[p]
-                if len(state) == 0:
-                    state["momentum_buffer"] = torch.zeros_like(p)
-                
-                update = muonclip_update(
-                    p.grad, 
-                    state["momentum_buffer"], 
-                    beta=group["momentum"],
-                    ns_steps=group["ns_steps"],
-                    nesterov=group["nesterov"]
-                )
-                
-                p.mul_(1 - group["lr"] * group["weight_decay"])
-                p.add_(update, alpha=-group["lr"])
-        
-        self._apply_qk_clip()
-        
-        return loss
-    
-    def _apply_qk_clip(self):
-        """Apply QK-Clip to registered attention parameters"""
-        qk_threshold = None
-        for group in self.param_groups:
-            qk_threshold = group['qk_clip_threshold']
-            break
-            
-        if qk_threshold is None:
-            return
-        
-        for layer_id, layer_info in self.attention_layers.items():
-            heads = layer_info['heads']
-            max_logits = layer_info['max_logits']
-            
-            for head_idx, (head_config, max_logit) in enumerate(zip(heads, max_logits)):
-                if max_logit > qk_threshold:
-                    gamma = qk_threshold / max_logit
-                    sqrt_gamma = math.sqrt(gamma)
-                    
-                    for param in head_config.get('qc_params', []):
-                        param.mul_(sqrt_gamma)
-                    
-                    for param in head_config.get('kc_params', []):
-                        param.mul_(sqrt_gamma)
-                    
-                    for param in head_config.get('qr_params', []):
-                        param.mul_(gamma)
 
 
 # Example MLA-style attention module with QK-Clip integration
