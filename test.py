@@ -284,6 +284,9 @@ def train_model(model, optimizer, dataloader, config, opt_name):
     start_time = time.time()
     last_log_time = start_time
     
+    # Track losses for averaging
+    losses_in_interval = []
+    
     for step in range(config.num_steps):
         try:
             batch = next(data_iter)
@@ -310,6 +313,9 @@ def train_model(model, optimizer, dataloader, config, opt_name):
         # Optimizer step
         optimizer.step()
         
+        # Track loss for averaging
+        losses_in_interval.append(loss.item())
+        
         # Logging
         if step % config.log_interval == 0:
             current_time = time.time()
@@ -334,13 +340,14 @@ def train_model(model, optimizer, dataloader, config, opt_name):
             # Get learning rate
             lr = optimizer.param_groups[0]['lr']
             
-            # Calculate perplexity
-            perplexity = torch.exp(loss)
+            # Calculate average loss and perplexity for this interval
+            avg_loss = np.mean(losses_in_interval)
+            avg_perplexity = np.exp(avg_loss)
             
             # Log metrics
             metrics = {
-                "loss": loss.item(),
-                "perplexity": perplexity.item(),
+                "loss": avg_loss,
+                "perplexity": avg_perplexity,
                 "grad_norm": grad_norm.item(),
                 "learning_rate": lr,
                 "step": step,
@@ -362,9 +369,11 @@ def train_model(model, optimizer, dataloader, config, opt_name):
             # Format elapsed time
             elapsed_str = f"{int(elapsed_time // 3600):02d}:{int((elapsed_time % 3600) // 60):02d}:{int(elapsed_time % 60):02d}"
             
-            print(f"Step {step}/{config.num_steps}: loss={loss.item():.4f}, ppl={perplexity.item():.2f}, {it_per_sec:.2f}it/s, elapsed={elapsed_str}, ETA={eta_str}")
+            print(f"Step {step}/{config.num_steps}: loss={avg_loss:.4f}, ppl={avg_perplexity:.2f}, {it_per_sec:.2f}it/s, elapsed={elapsed_str}, ETA={eta_str}")
             
             last_log_time = current_time
+            # Reset losses for next interval
+            losses_in_interval = []
     
     wandb.finish()
     return model
