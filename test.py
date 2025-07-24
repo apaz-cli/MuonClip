@@ -6,7 +6,7 @@ import wandb
 import numpy as np
 from torch.utils.data import DataLoader
 from datasets import load_dataset
-from transformers import AutoTokenizer, GPT2Config, GPT2LMHeadModel
+from transformers import AutoTokenizer, GPTJConfig, GPTJForCausalLM
 import transformers.models.gptj.modeling_gptj
 from transformers.models.gptj.modeling_gptj import GPTJAttention
 from transformers.cache_utils import Cache
@@ -17,17 +17,18 @@ import subprocess
 import time
 
 from muon import SingleDeviceMuonWithAuxAdam
-from muonclip import MuonClipWithAuxAdam, GPTJAttentionWithQKClip
+from muonclip import MuonClipWithAuxAdam, _GPTJAttentionWithQKClip
 
 torch.set_float32_matmul_precision('medium')
 
 # Configuration
 class Config:
     # Model
-    model_name = "gptj"
+    model_name = "EleutherAI/gpt-j-6B"
+    attn_impl = "eager"
     
     # Training
-    batch_size = 64
+    batch_size = 4
     adam_lr = 1e-3
     num_steps = 2000
     log_interval = 100
@@ -279,23 +280,18 @@ def main():
     print("Loading dataset...")
     dataloader = create_dataloader(config, tokenizer)
     
-    # Create model with HuggingFace GPT2
+    # Create model with HuggingFace GPTJ
     print("Creating model...")
-    model_config = GPT2Config.from_pretrained(config.model_name)
+    model_config = GPTJConfig.from_pretrained(config.model_name)
     model_config.use_cache = False
     model_config._attn_implementation = config.attn_impl
-    model = GPT2LMHeadModel(model_config).to(config.device) # type: ignore
-    
-    # Replace attention modules with our custom implementation
-    for name, module in model.named_modules():
-        if isinstance(module, GPTJAttention):
-            new_module = GPTJAttentionWithQKClip(config=module.config, layer_idx=module.layer_idx)
-            setattr(new_module, 'qk_clip_threshold', config.muonclip_qk_clip_threshold if args.optimizer == 'muonclip' else None)
-            setattr(model, name, new_module)
+    model = GPTJForCausalLM(model_config).to(config.device) # type: ignore
+
+    # Replace GPT-J attention with our custom implementation
+    GPTJAttention._attn = _GPTJAttentionWithQKClip._attn # type: ignore (Monke patch :3)
 
     # collect the parameters to optimize    
-    # GPT2 ties the weights of the head to the (non-positional) embedding layer for... reasons? Fair enough. We treat them both as the head param.
-    embed_params = [model.transformer.wpe.weight]
+    embed_params = [model.transformer.wte.weight]
     head_params = [model.lm_head.weight]
     accounted_names = {get_param_name(model, p) for p in (embed_params + head_params)}
     scalar_params = [p for n, p in model.named_parameters() if (p.ndim < 2) and (n not in accounted_names)]

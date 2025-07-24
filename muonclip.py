@@ -1,6 +1,8 @@
 import torch
-import torch.nn as nn
 import math
+import torch.nn as nn
+
+from transformers.models.gptj.modeling_gptj import GPTJAttention
 
 def zeropower_via_newtonschulz5(G, steps: int):
     """Newton-Schulz iteration to compute the zeroth power / orthogonalization of G."""
@@ -78,100 +80,6 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
                 group["weight_decay"] = group.get("weight_decay", 0)
                 assert set(group.keys()) == set(["params", "lr", "betas", "eps", "weight_decay", "use_muon"])
         super().__init__(param_groups, dict())
-        
-        # Auto-detect attention layers from model structure
-        self.attention_layers = {}
-        if model is not None:
-            self._detect_attention_params(model)
-
-    def _detect_attention_params(self, model):
-        """Automatically detect and group attention parameters from model"""
-        # Walk through all modules and find attention layers
-        for name, module in model.named_modules():
-            if isinstance(module, (MLAAttentionWithQKClip, SimpleAttentionWithQKClip)):
-                layer_id = name  # Use module path as layer ID
-                
-                if isinstance(module, MLAAttentionWithQKClip):
-                    # MLA style with per-head components
-                    heads_config = []
-                    for h in range(module.num_heads):
-                        heads_config.append({
-                            'qc_params': [module.qc_projs[h].weight],
-                            'kc_params': [module.kc_projs[h].weight],
-                            'qr_params': [module.qr_projs[h].weight],
-                            'kr_params': []  # kr is shared
-                        })
-                    
-                    self.attention_layers[layer_id] = {
-                        'heads': heads_config,
-                        'max_logits': [0.0] * module.num_heads,
-                        'module': module
-                    }
-                else:
-                    # Standard attention
-                    self.attention_layers[layer_id] = {
-                        'heads': [{
-                            'qc_params': [module.q_proj.weight],
-                            'kc_params': [module.k_proj.weight],
-                            'qr_params': [],
-                            'kr_params': []
-                        }],
-                        'max_logits': [0.0],
-                        'module': module
-                    }
-                
-                # Set optimizer reference in module
-                module._optimizer = self
-                module._layer_id = layer_id
-
-    def register_attention_layer(self, layer_id, module):
-        """Manually register an attention layer for QK-Clip"""
-        if isinstance(module, MLAAttentionWithQKClip):
-            # MLA style with per-head components
-            heads_config = []
-            for h in range(module.num_heads):
-                heads_config.append({
-                    'qc_params': [module.qc_projs[h].weight],
-                    'kc_params': [module.kc_projs[h].weight],
-                    'qr_params': [module.qr_projs[h].weight],
-                    'kr_params': []  # kr is shared
-                })
-            
-            self.attention_layers[layer_id] = {
-                'heads': heads_config,
-                'max_logits': [0.0] * module.num_heads,
-                'module': module
-            }
-        else:
-            # Standard attention
-            self.attention_layers[layer_id] = {
-                'heads': [{
-                    'qc_params': [module.q_proj.weight],
-                    'kc_params': [module.k_proj.weight],
-                    'qr_params': [],
-                    'kr_params': []
-                }],
-                'max_logits': [0.0],
-                'module': module
-            }
-        
-        # Set optimizer reference in module
-        module._optimizer = self
-        module._layer_id = layer_id
-
-    def update_attention_max_logit(self, layer_id, max_logit, head_idx=None):
-        """Update max logit for a specific attention layer/head"""
-        if layer_id not in self.attention_layers:
-            return
-            
-        if isinstance(max_logit, (list, tuple)):
-            self.attention_layers[layer_id]['max_logits'] = list(max_logit)
-        elif head_idx is not None:
-            self.attention_layers[layer_id]['max_logits'][head_idx] = max_logit
-        else:
-            self.attention_layers[layer_id]['max_logits'] = [max_logit] * len(
-                self.attention_layers[layer_id]['heads']
-            )
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -222,6 +130,14 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
         if qk_threshold is None:
             return
         
+        def apply(param, max_logit, qk_threshold, apply_sqrt=True):
+            if max_logit > qk_threshold:
+                gamma = qk_threshold / max_logit
+                sqrt_gamma = math.sqrt(gamma)
+                param.mul_(sqrt_gamma if apply_sqrt else gamma)
+            
+            
+
         for layer_id, layer_info in self.attention_layers.items():
             heads = layer_info['heads']
             max_logits = layer_info['max_logits']
@@ -241,117 +157,46 @@ class MuonClipWithAuxAdam(torch.optim.Optimizer):
                         param.mul_(gamma)
 
 
+class _GPTJAttentionWithQKClip(GPTJAttention):
+    """
+    GPT-J attention with Muon support.
+    """
+    def _attn(
+        self,
+        query,
+        key,
+        value,
+        attention_mask=None,
+        head_mask=None,
+    ):
+        # Keep the attention weights computation in fp32 to avoid overflow issues
+        query = query.to(torch.float32)
+        key = key.to(torch.float32)
 
-# Example MLA-style attention module with QK-Clip integration
-class MLAAttentionWithQKClip(nn.Module):
-    """MLA-style attention module for MuonClip"""
-    
-    def __init__(self, dim, num_heads):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = 1.0 / math.sqrt(self.head_dim)
-        
-        # MLA-style decomposed projections
-        self.qc_projs = nn.ModuleList([
-            nn.Linear(dim, self.head_dim) for _ in range(num_heads)
-        ])
-        self.kc_projs = nn.ModuleList([
-            nn.Linear(dim, self.head_dim) for _ in range(num_heads)
-        ])
-        self.qr_projs = nn.ModuleList([
-            nn.Linear(dim, self.head_dim) for _ in range(num_heads)
-        ])
-        # Shared key rotary
-        self.kr_proj = nn.Linear(dim, dim)
-        
-        self.v_proj = nn.Linear(dim, dim)
-        
-        # Will be set by optimizer
-        self._optimizer = None
-        self._layer_id = None
-    
-    def forward(self, x):
-        B, L, D = x.shape
-        
-        all_max_logits = []
-        outputs = []
-        
-        # Shared key rotary component
-        kr = self.kr_proj(x)
-        
-        for h in range(self.num_heads):
-            # Head-specific components
-            qc = self.qc_projs[h](x)
-            kc = self.kc_projs[h](x)
-            qr = self.qr_projs[h](x)
-            
-            # Combine components
-            q = qc + qr
-            k = kc + kr[:, :, h*self.head_dim:(h+1)*self.head_dim]
-            
-            # Compute attention scores
-            scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-            
-            # Track per-head max logit
-            if self.training and self._optimizer is not None:
-                with torch.no_grad():
-                    max_logit = scores.max().item()
-                    all_max_logits.append(max_logit)
-            
-            attn = torch.softmax(scores, dim=-1)
-            outputs.append(attn)
-        
-        # Update optimizer with per-head max logits
-        if self.training and self._optimizer is not None and all_max_logits:
-            self._optimizer.update_attention_max_logit(
-                self._layer_id, all_max_logits
-            )
-        
-        # Simplified output
-        avg_attn = torch.stack(outputs, dim=0).mean(dim=0)
-        v = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        out = torch.matmul(avg_attn.unsqueeze(1), v).transpose(1, 2).contiguous()
-        out = out.view(B, L, D)
-        
-        return out
+        attn_weights = torch.matmul(query, key.transpose(-1, -2))
+        attn_weights = attn_weights / self.scale_attn
 
+        with torch.no_grad():
+            max_logits_per_head = attn_weights.amax(dim=(0, 2, 3))  # shape: [num_heads]
+            
+            if not hasattr(self, '_qk_clip_max_logits'):
+                self._qk_clip_max_logits = max_logits_per_head
+            else:
+                self._qk_clip_max_logits = torch.maximum(self._qk_clip_max_logits, max_logits_per_head)
 
-# Standard attention module
-class SimpleAttentionWithQKClip(nn.Module):
-    """Standard attention module with QK-Clip support"""
-    
-    def __init__(self, dim, num_heads):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = 1.0 / math.sqrt(self.head_dim)
-        
-        self.q_proj = nn.Linear(dim, dim)
-        self.k_proj = nn.Linear(dim, dim)
-        self.v_proj = nn.Linear(dim, dim)
-        
-        # Will be set by optimizer
-        self._optimizer = None
-        self._layer_id = None
-    
-    def forward(self, x):
-        B, L, D = x.shape
-        
-        q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-        
-        if self.training and self._optimizer is not None:
-            with torch.no_grad():
-                max_logit = scores.max().item()
-                self._optimizer.update_attention_max_logit(self._layer_id, max_logit)
-        
-        attn = torch.softmax(scores, dim=-1)
-        out = torch.matmul(attn, v)
-        out = out.transpose(1, 2).contiguous().view(B, L, D)
-        
-        return out
+        if attention_mask is not None:  # no matter the length, we just slice it
+            causal_mask = attention_mask[:, :, :, : key.shape[-2]]
+            attn_weights = attn_weights + causal_mask
+
+        attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1)
+        attn_weights = attn_weights.to(value.dtype)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        # Mask heads if we want to
+        if head_mask is not None:
+            attn_weights = attn_weights * head_mask
+
+        attn_output = torch.matmul(attn_weights, value)
+
+        return attn_output, attn_weights
 
